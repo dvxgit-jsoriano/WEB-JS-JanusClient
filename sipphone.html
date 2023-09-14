@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SIP Phone JANUS</title>
+
+    <script src="assets/jquery.min.js"></script>
+    <script src="assets/adapter.min.js"></script>
+    <script src="assets/janus.js"></script>
+
+</head>
+
+<body id="sipcall">
+
+    <div>
+        <h1>Establishing websocket connection...</h1>
+
+        <button id="autofill" onclick="autofill();">Auto fill</button>
+        <button id="start" onclick="start();">Start</button>
+
+        <hr>
+
+        <div>
+            <label for="server">Server: </label>
+            <input type="text" placeholder="SIP Registrar (e.g., sip:host:port)" autocomplete="off" id="server">
+        </div>
+        <div>
+            <label for="identity">SIP Identity: </label>
+            <input type="text" placeholder="SIP Identity (e.g., sip:goofy@example.com)" autocomplete="off"
+                id="identity">
+        </div>
+        <div>
+            <label for="authuser">AuthUser: </label>
+            <input type="text" placeholder="Username (e.g., goofy, overrides the one in the SIP identity if provided)"
+                autocomplete="off" id="authuser">
+        </div>
+        <div>
+            <label for="password">Password:</label>
+            <input type="password" placeholder="Secret (e.g., mysupersecretpassword)" autocomplete="off" id="password">
+        </div>
+        <div>
+            <label for="displayname">Display Name</label>
+            <input type="text" placeholder="Display name (e.g., Alice Smith)" autocomplete="off" id="displayname">
+        </div>
+        <hr>
+        <div>
+            <button class="btn btn-primary" autocomplete="off" id="register" style="width: 40%"
+                onclick="register();">Register</button>
+        </div>
+    </div>
+
+    <hr>
+    <div>
+        <h2>Dialer:</h2>
+        <div>
+            <label for="dialer_text">Text Display: </label>
+            <input type="text" autocomplete="off" id="dialer_text">
+        </div>
+        <hr>
+        <div>
+            <button autocomplete="off" id="register" style="width: 40%" onclick="doCall();">Call</button>
+        </div>
+    </div>
+
+    <hr>
+    <div id="videos" class="hide">
+        <div class="col-md-6">
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <h3 class="panel-title">You</h3>
+                </div>
+                <div class="panel-body" id="videoleft"></div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <h3 class="panel-title">Remote UA</h3>
+                </div>
+                <div class="panel-body" id="videoright"></div>
+            </div>
+        </div>
+    </div>
+
+    <hr>
+    <div>
+        <h2>Incoming Call</h2>
+        <div>
+            <h3 id="title">[Title]</h3>
+            <label for="" id="message">[Message]</label>
+        </div>
+        <div>
+            <button onclick="answerCall();">Answer</button>
+            <button onclick="declineCall();">Hangup</button>
+        </div>
+
+    </div>
+
+    <hr>
+    <div>
+        <p>Janus WebRTC Server © <a href="https://diavox.net">Diavox</a> 2023</p>
+    </div>
+</body>
+
+<script>
+    let janusInstance;
+    var wsServer = "ws://192.168.33.153:8188/janus";
+    var iceServers = null;
+
+    var janus = null;
+    var sipcall = null;
+
+    var localTracks = {}, localVideos = 0,
+        remoteTracks = {}, remoteVideos = 0;
+
+    console.log("wsServer : " + wsServer);
+    console.log("iceServers : " + iceServers);
+
+    var global_offerlessInvite = null;
+    var global_jsep = null;
+    var global_doAudio = null;
+    var global_doVideo = null;
+
+    function autofill() {
+        $("#server").val("sip:192.168.33.48");
+        $("#identity").val("sip:8005@192.168.33.48");
+        $("#authuser").val("8005");
+        $("#password").val("");
+        $("#displayname").val("8005");
+    }
+
+    function start() {
+        console.log(">>> Starting...");
+
+        if ($("#start").html() == "Stop") {
+            janus.destroy();
+            $("#start").html("Start");
+            return;
+        }
+
+        // You can access the Janus instance here and use it
+        if (janusInstance) {
+            // Use janusInstance for Janus-related operations
+            janus = new Janus({
+                server: wsServer,
+                iceServers: iceServers,
+                success: function () {
+                    console.log(">>> SUCCESSFUL JANUS INSTANTIATE!");
+
+                    // Create the handle here.
+                    janus.attach({
+                        plugin: "janus.plugin.sip",
+                        //opaqueId: opaqueId,
+                        success: function (pluginHandle) {
+                            console.log("JANUS PLUGIN SUCCESSFUL! janus attached!!!");
+
+                            sipcall = pluginHandle;
+                            Janus.log("Plugin attached! (" + sipcall.getPlugin() + ", id=" + sipcall.getId() + ")");
+
+                            $('#start').html("Stop")
+
+                            console.log("pluginHandle sent!");
+                        },
+                        error: function (error) {
+                            console.error(error);
+                        },
+                        onmessage: function (msg, jsep) {
+                            let callId = null;
+                            let result = null;
+                            let event = null;
+
+                            console.log("GOT A MESSAGE");
+                            console.log(msg);
+                            Janus.debug(" ::: Got a message :::", msg);
+                            let error = msg["error"];
+                            if (error) {
+                                console.error(error);
+                            }
+
+                            callId = msg["call_id"];
+                            result = msg["result"];
+                            if (result && result["event"])
+                                event = result["event"];
+
+                            switch (event) {
+
+                                case 'calling':
+                                    console.log(">>> Calling...");
+                                    break;
+                                case 'accepting':
+                                    console.log(">>> Accepting...");
+                                case 'accepted':
+                                    console.log(">>> " + result["username"] + " accepted the call!");
+                                    // Call can start, now: handle the remote answer
+                                    if (jsep) {
+                                        sipcall.handleRemoteJsep({ jsep: jsep, error: doHangup });
+                                    }
+                                    console.log("-----------------------------Call accepted!");
+                                    sipcall.callId = callId;
+                                    break;
+                                case 'progress':
+                                    console.log(">>> Call in progress...");
+                                    if (jsep) {
+                                        sipcall.handleRemoteJsep({ jsep: jsep, error: doHangup });
+                                    }
+                                    break;
+
+                                case 'incomingcall':
+                                    console.log('INCOMING');
+
+                                    sipcall.callId = callId;
+                                    let doAudio = true, doVideo = false;
+                                    let offerlessInvite = false;
+
+                                    if (jsep) {
+                                        // What has been negotiated?
+                                        doAudio = (jsep.sdp.indexOf("m=audio ") > -1);
+                                        doVideo = (jsep.sdp.indexOf("m=video ") > -1);
+                                        Janus.debug("Audio " + (doAudio ? "has" : "has NOT") + " been negotiated");
+                                        Janus.debug("Video " + (doVideo ? "has" : "has NOT") + " been negotiated");
+                                    } else {
+                                        Janus.log("This call doesn't contain an offer... we'll need to provide one ourselves");
+                                        offerlessInvite = true;
+                                        $("#offerlessInvite").val(offerlessInvite);
+                                        // In case you want to offer video when reacting to an offerless call, set this to true
+                                        doVideo = false;
+                                    }
+
+                                    // Is this the result of a transfer?
+                                    let transfer = "";
+                                    let referredBy = result["referred_by"];
+                                    if (referredBy) {
+                                        transfer = " (referred by " + referredBy + ")";
+                                        transfer = transfer.replace(new RegExp('<', 'g'), '&lt');
+                                        transfer = transfer.replace(new RegExp('>', 'g'), '&gt');
+                                    }
+
+                                    // Any security offered? A missing "srtp" attribute means plain RTP
+                                    let rtpType = "";
+                                    let srtp = result["srtp"];
+                                    if (srtp === "sdes_optional")
+                                        rtpType = " (SDES-SRTP offered)";
+                                    else if (srtp === "sdes_mandatory")
+                                        rtpType = " (SDES-SRTP mandatory)";
+
+                                    let extra = "";
+                                    if (offerlessInvite)
+                                        extra = " (no SDP offer provided)"
+
+                                    $("#title").html("Incoming call coming in...");
+                                    $("#message").html("Incoming call from " + result["username"] + "!" + transfer + rtpType + extra);
+
+                                    global_jsep = jsep;
+                                    global_doAudio = doAudio;
+                                    global_doVideo = doVideo;
+                                    global_offerlessInvite = offerlessInvite;
+
+                                    break;
+                                case 'hangup':
+                                    console.log(">>> Hanging up call...");
+                                    Janus.log("Call hung up (" + result["code"] + " " + result["reason"] + ")!");
+                                    // Reset status
+                                    sipcall.hangup();
+                                default:
+                                    console.log(event);
+                            }
+                        },
+                        iceState: function (state) {
+                            Janus.log("ICE state changed to " + state);
+                        },
+                        mediaState: function (medium, on, mid) {
+                            Janus.log("Janus " + (on ? "started" : "stopped") + " receiving our " + medium + " (mid=" + mid + ")");
+                        },
+                        webrtcState: function (on) {
+                            Janus.log("Janus says our WebRTC PeerConnection is " + (on ? "up" : "down") + " now");
+                        },
+                        slowLink: function (uplink, lost, mid) {
+                            Janus.warn("Janus reports problems " + (uplink ? "sending" : "receiving") +
+                                " packets on mid " + mid + " (" + lost + " lost packets)");
+                        },
+                        onlocaltrack: function (track, on) {
+                            Janus.debug("Local track " + (on ? "added" : "removed") + ":", track);
+                            // We use the track ID as name of the element, but it may contain invalid characters
+                            let trackId = track.id.replace(/[{}]/g, "");
+                            if (!on) {
+                                // Track removed, get rid of the stream and the rendering
+                                let stream = localTracks[trackId];
+                                if (stream) {
+                                    try {
+                                        let tracks = stream.getTracks();
+                                        for (let i in tracks) {
+                                            let mst = tracks[i];
+                                            if (mst)
+                                                mst.stop();
+                                        }
+                                    } catch (e) { }
+                                }
+                                if (track.kind === "video") {
+                                    $('#myvideot' + trackId).remove();
+                                    localVideos--;
+                                    if (localVideos === 0) {
+                                        // No video, at least for now: show a placeholder
+                                        if ($('#videoleft .no-video-container').length === 0) {
+                                            $('#videoleft').append(
+                                                '<div class="no-video-container">' +
+                                                '<i class="fa fa-video-camera fa-5 no-video-icon"></i>' +
+                                                '<span class="no-video-text">No webcam available</span>' +
+                                                '</div>');
+                                        }
+                                    }
+                                }
+                                delete localTracks[trackId];
+                                return;
+                            }
+                            // If we're here, a new track was added
+                            let stream = localTracks[trackId];
+                            if (stream) {
+                                // We've been here already
+                                return;
+                            }
+                            if ($('#videoleft video').length === 0) {
+                                $('#videos').removeClass('hide').show();
+                            }
+                            if (track.kind === "audio") {
+                                // We ignore local audio tracks, they'd generate echo anyway
+                                if (localVideos === 0) {
+                                    // No video, at least for now: show a placeholder
+                                    if ($('#videoleft .no-video-container').length === 0) {
+                                        $('#videoleft').append(
+                                            '<div class="no-video-container">' +
+                                            '<i class="fa fa-video-camera fa-5 no-video-icon"></i>' +
+                                            '<span class="no-video-text">No webcam available</span>' +
+                                            '</div>');
+                                    }
+                                }
+                            } else {
+                                // New video track: create a stream out of it
+                                localVideos++;
+                                $('#videoleft .no-video-container').remove();
+                                stream = new MediaStream([track]);
+                                localTracks[trackId] = stream;
+                                Janus.log("Created local stream:", stream);
+                                $('#videoleft').append('<video class="rounded centered" id="myvideot' + trackId + '" width="100%" height="100%" autoplay playsinline muted="muted"/>');
+                                Janus.attachMediaStream($('#myvideot' + trackId).get(0), stream);
+                            }
+                            if (sipcall.webrtcStuff.pc.iceConnectionState !== "completed" &&
+                                sipcall.webrtcStuff.pc.iceConnectionState !== "connected") {
+                                /* $("#videoleft").parent().block({
+                                    message: '<b>Calling...</b>',
+                                    css: {
+                                        border: 'none',
+                                        backgroundColor: 'transparent',
+                                        color: 'white'
+                                    }
+                                }); */
+                            }
+                        },
+                        onremotetrack: function (track, mid, on) {
+                            Janus.debug("Remote track (mid=" + mid + ") " + (on ? "added" : "removed") + ":", track);
+                            if (!on) {
+                                // Track removed, get rid of the stream and the rendering
+                                $('#peervideom' + mid).remove();
+                                if (track.kind === "video") {
+                                    remoteVideos--;
+                                    if (remoteVideos === 0) {
+                                        // No video, at least for now: show a placeholder
+                                        if ($('#videoright .no-video-container').length === 0) {
+                                            $('#videoright').append(
+                                                '<div class="no-video-container">' +
+                                                '<i class="fa fa-video-camera fa-5 no-video-icon"></i>' +
+                                                '<span class="no-video-text">No remote video available</span>' +
+                                                '</div>');
+                                        }
+                                    }
+                                }
+                                delete remoteTracks[mid];
+                                return;
+                            }
+                            // If we're here, a new track was added
+                            if ($('#videoright audio').length === 0 && $('#videoright video').length === 0) {
+                                $('#videos').removeClass('hide').show();
+                                $('#videoright').parent().find('h3').html(
+                                    'Send DTMF: <span id="dtmf" class="btn-group btn-group-xs"></span>' +
+                                    '<span id="ctrls" class="pull-right btn-group btn-group-xs">' +
+                                    '<button id="msg" title="Send message" class="btn btn-info"><i class="fa fa-envelope"></i></button>' +
+                                    '<button id="info" title="Send INFO" class="btn btn-info"><i class="fa fa-info"></i></button>' +
+                                    '<button id="transfer" title="Transfer call" class="btn btn-info"><i class="fa fa-mail-forward"></i></button>' +
+                                    '</span>');
+                                for (let i = 0; i < 12; i++) {
+                                    if (i < 10)
+                                        $('#dtmf').append('<button class="btn btn-info dtmf">' + i + '</button>');
+                                    else if (i == 10)
+                                        $('#dtmf').append('<button class="btn btn-info dtmf">#</button>');
+                                    else if (i == 11)
+                                        $('#dtmf').append('<button class="btn btn-info dtmf">*</button>');
+                                }
+                                $('.dtmf').click(function () {
+                                    // Send DTMF tone (inband)
+                                    sipcall.dtmf({ dtmf: { tones: $(this).text() } });
+                                    // Notice you can also send DTMF tones using SIP INFO
+                                    // 		sipcall.send({message: {request: "dtmf_info", digit: $(this).text()}});
+                                });
+                                $('#msg').click(function () {
+                                    bootbox.prompt("Insert message to send", function (result) {
+                                        if (result && result !== '') {
+                                            // Send the message
+                                            let msg = { request: "message", content: result };
+                                            sipcall.send({ message: msg });
+                                        }
+                                    });
+                                });
+                                $('#info').click(function () {
+                                    bootbox.dialog({
+                                        message: 'Type: <input class="form-control" type="text" id="type" placeholder="e.g., application/xml">' +
+                                            '<br/>Content: <input class="form-control" type="text" id="content" placeholder="e.g., <message>hi</message>">',
+                                        title: "Insert the type and content to send",
+                                        buttons: {
+                                            cancel: {
+                                                label: "Cancel",
+                                                className: "btn-default",
+                                                callback: function () {
+                                                    // Do nothing
+                                                }
+                                            },
+                                            ok: {
+                                                label: "OK",
+                                                className: "btn-primary",
+                                                callback: function () {
+                                                    // Send the INFO
+                                                    let type = $('#type').val();
+                                                    let content = $('#content').val();
+                                                    if (type === '' || content === '')
+                                                        return;
+                                                    let msg = { request: "info", type: type, content: content };
+                                                    sipcall.send({ message: msg });
+                                                }
+                                            }
+                                        }
+                                    });
+                                });
+                                $('#transfer').click(function () {
+                                    bootbox.dialog({
+                                        message: '<input class="form-control" type="text" id="transferto" placeholder="e.g., sip:goofy@example.com">',
+                                        title: "Insert the address to transfer the call to",
+                                        buttons: {
+                                            cancel: {
+                                                label: "Cancel",
+                                                className: "btn-default",
+                                                callback: function () {
+                                                    // Do nothing
+                                                }
+                                            },
+                                            blind: {
+                                                label: "Blind transfer",
+                                                className: "btn-info",
+                                                callback: function () {
+                                                    // Start a blind transfer
+                                                    let address = $('#transferto').val();
+                                                    if (address === '')
+                                                        return;
+                                                    let msg = { request: "transfer", uri: address };
+                                                    sipcall.send({ message: msg });
+                                                }
+                                            },
+                                            attended: {
+                                                label: "Attended transfer",
+                                                className: "btn-primary",
+                                                callback: function () {
+                                                    // Start an attended transfer
+                                                    let address = $('#transferto').val();
+                                                    if (address === '')
+                                                        return;
+                                                    // Add the call-id to replace to the transfer
+                                                    let msg = { request: "transfer", uri: address, replace: sipcall.callId };
+                                                    sipcall.send({ message: msg });
+                                                }
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                            if (track.kind === "audio") {
+                                // New audio track: create a stream out of it, and use a hidden <audio> element
+                                let stream = new MediaStream([track]);
+                                remoteTracks[mid] = stream;
+                                Janus.log("Created remote audio stream:", stream);
+                                $('#videoright').append('<audio class="hide" id="peervideom' + mid + '" autoplay playsinline/>');
+                                Janus.attachMediaStream($('#peervideom' + mid).get(0), stream);
+                                if (remoteVideos === 0) {
+                                    // No video, at least for now: show a placeholder
+                                    if ($('#videoright .no-video-container').length === 0) {
+                                        $('#videoright').append(
+                                            '<div class="no-video-container">' +
+                                            '<i class="fa fa-video-camera fa-5 no-video-icon"></i>' +
+                                            '<span class="no-video-text">No remote video available</span>' +
+                                            '</div>');
+                                    }
+                                }
+                            } else {
+                                // New video track: create a stream out of it
+                                remoteVideos++;
+                                $('#videoright .no-video-container').remove();
+                                let stream = new MediaStream([track]);
+                                remoteTracks[mid] = stream;
+                                Janus.log("Created remote video stream:", stream);
+                                $('#videoright').append('<video class="rounded centered" id="peervideom' + mid + '" width="100%" height="100%" autoplay playsinline/>');
+                                Janus.attachMediaStream($('#peervideom' + mid).get(0), stream);
+                            }
+                        },
+                        oncleanup: function () {
+                            Janus.log(" ::: Got a cleanup notification :::");
+                            //$("#videoleft").empty().parent().unblock();
+                            $('#videoright').empty();
+                            $('#videos').hide();
+                            $('#dtmf').parent().html("Remote UA");
+                            if (sipcall) {
+                                delete sipcall.callId;
+                                delete sipcall.doAudio;
+                                delete sipcall.doVideo;
+                            }
+                            localTracks = {};
+                            localVideos = 0;
+                            remoteTracks = {};
+                            remoteVideos = 0;
+                        }
+
+                    })
+                },
+                error: function (error) {
+                    console.error(error);
+                },
+                destroyed: function () {
+                    window.location.reload();
+                },
+            });
+
+        } else {
+            console.error("Janus has not been initialized yet.");
+        }
+
+    }
+
+    function register() {
+        console.log(">>> Registering...");
+        console.log(sipcall);
+
+        let register = {
+            request: "register",
+        };
+
+        let sipserver = $('#server').val();
+        let username = $('#identity').val();
+        let displayname = $('#displayname').val();
+        let authuser = $("#authuser").val();
+        let password = $("#password").val();
+
+        register.username = username;
+        register.display_name = displayname;
+        register.authuser = authuser;
+        register["proxy"] = sipserver;
+        register["secret"] = password;
+
+        console.log(register);
+
+        sipcall.send({ message: register });
+
+        return;
+    }
+
+    function doCall(ev) {
+        let handle = sipcall;
+        console.log(handle);
+
+        actuallyDoCall(handle, "sip:620@192.168.33.48", false);
+    }
+
+    function actuallyDoCall(handle, uri, doVideo, referId) {
+        handle.doAudio = true;
+        handle.doVideo = doVideo;
+        // Default tracks for audio.
+        let tracks = [{ type: 'audio', capture: true, recv: true }];
+        if (doVideo)
+            tracks.push({ type: 'video', capture: true, recv: true });
+        handle.createOffer({
+            tracks: tracks,
+            success: function (jsep) {
+                console.log("Got SDP!", jsep);
+
+                // Pass the uri to the body. Request call.
+                let body = { request: "call", uri: uri };
+                body["autoaccept_reinvites"] = false;
+                // Send it to janus
+                handle.send({ message: body, jsep: jsep });
+            },
+            error: function (error) {
+                console.error("WebRTC Error: " + error);
+            },
+        });
+    }
+
+    function doHangup(ev) {
+        sipcall.send({ message: hangup });
+        sipcall.hangup();
+    }
+
+    function answerCall() {
+        console.log('answering');
+        incoming = null;
+
+        let offerlessInvite = global_offerlessInvite;
+
+        let jsep = global_jsep;
+
+        let sipcallAction = (offerlessInvite ? sipcall.createOffer : sipcall.createAnswer);
+
+        let doAudio = global_doAudio ? true : false;
+        let doVideo = global_doVideo;
+
+        // We want bidirectional audio and/or video
+        let tracks = [];
+        if (doAudio)
+            tracks.push({ type: 'audio', capture: true, recv: true });
+        if (doVideo)
+            tracks.push({ type: 'video', capture: true, recv: true });
+        sipcallAction(
+            {
+                jsep: jsep,
+                tracks: tracks,
+                success: function (jsep) {
+                    Janus.debug("Got SDP " + jsep.type + "! audio=" + doAudio + ", video=" + doVideo + ":", jsep);
+                    sipcall.doAudio = doAudio;
+                    sipcall.doVideo = doVideo;
+                    let body = { request: "accept" };
+                    // Note: as with "call", you can add a "srtp" attribute to
+                    // negotiate/mandate SDES support for this incoming call.
+                    // The default behaviour is to automatically use it if
+                    // the caller negotiated it, but you may choose to require
+                    // SDES support by setting "srtp" to "sdes_mandatory", e.g.:
+                    //		let body = { request: "accept", srtp: "sdes_mandatory" };
+                    // This way you'll tell the plugin to accept the call, but ONLY
+                    // if SDES is available, and you don't want plain RTP. If it
+                    // is not available, you'll get an error (452) back. You can
+                    // also specify the SRTP profile to negotiate by setting the
+                    // "srtp_profile" property accordingly (the default if not
+                    // set in the request is "AES_CM_128_HMAC_SHA1_80")
+                    // Note 2: by default, the SIP plugin auto-answers incoming
+                    // re-INVITEs, without involving the browser/client: this is
+                    // for backwards compatibility with older Janus clients that
+                    // may not be able to handle them. Since we want to receive
+                    // re-INVITES to handle them ourselves, we specify it here:
+                    body["autoaccept_reinvites"] = false;
+                    sipcall.send({ message: body, jsep: jsep });
+                },
+                error: function (error) {
+                    Janus.error("WebRTC error:", error);
+                    bootbox.alert("WebRTC error... " + error.message);
+                    // Don't keep the caller waiting any longer, but use a 480 instead of the default 486 to clarify the cause
+                    let body = { request: "decline", code: 480 };
+                    sipcall.send({ message: body });
+                }
+            });
+    }
+
+    function declineCall() {
+        console.log('>>> declining');
+        incoming = null;
+        let body = { request: "decline" };
+        sipcall.send({ message: body });
+    }
+
+</script>
+
+<script>
+    $(document).ready(function () {
+        console.log(">>> Page is ready!");
+
+        // Make sure the browser supports WebRTC
+        if (!Janus.isWebrtcSupported()) {
+            console.log("No WebRTC support...");
+            return;
+        } else
+            console.log(">>> WebRTC supported!");
+
+        Janus.init({
+            debug: "all", callback: function () {
+                janusInstance = this;
+            }
+        });
+    });
+</script>
+
+</html>
