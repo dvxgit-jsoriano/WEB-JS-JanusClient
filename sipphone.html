@@ -21,6 +21,8 @@
         <button id="autofill" onclick="autofill();">Auto fill</button>
         <button id="start" onclick="start();">Start</button>
 
+        Status: <span id="sip_status">SIP STATUS</span>
+
         <hr>
 
         <div>
@@ -97,6 +99,12 @@
             <button onclick="declineCall();">Hangup</button>
         </div>
 
+    </div>
+
+    <hr>
+    <div>
+        <button onclick="requestStatus();">Request Status</button>
+        <button onclick="unregister();">Unregister</button>
     </div>
 
     <hr>
@@ -269,6 +277,12 @@
                                     console.log('REGISTRATION FAILED!');
                                     console.log(result);
                                     alert("Error: " + result["code"] + " - " + result["reason"]);
+                                    $("#sip_status").html("UNREGISTERED");
+                                    break;
+
+                                case "registered":
+                                    console.log("REEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEGISTEREEEEEEEEEEEEEED!!");
+                                    $("#sip_status").html("REGISTERED");
                                     break;
 
                                 default:
@@ -676,6 +690,28 @@
         console.log('>>> declining');
         incoming = null;
         let body = { request: "decline" };
+        sipcall.send({ message: body });
+    }
+
+    function requestStatus() {
+        console.log('>>> requesting status');
+        let body = {
+            authuser: "8005",
+            display_name: "8005",
+            proxy: "sip:192.168.33.48",
+            request: "register",
+            secret: "2241",
+            username: "sip:8005@192.168.33.48",
+            "send_register": false,
+        };
+        sipcall.send({ message: body });
+    }
+
+    function unregister() {
+        console.log('>>> requesting unregistration');
+        let body = {
+            "request": "unregister",
+        };
         sipcall.send({ message: body });
     }
 
